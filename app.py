@@ -185,7 +185,8 @@ def fill_missing_dates(daily_df: pd.DataFrame, start_date: pd.Timestamp, end_dat
     date_range = pd.date_range(start=start_date, end=end_date, freq='D')
     filled_df = pd.DataFrame({"交易日期": date_range})
     filled_df = filled_df.merge(daily_df, on="交易日期", how="left")
-    filled_df["当日持仓"] = filled_df["当日持仓"].fillna(method="ffill")
+    # 使用 ffill() 而不是 fillna(method="ffill")，兼容 pandas 2.0+
+    filled_df["当日持仓"] = filled_df["当日持仓"].ffill()
     return filled_df
 
 
