@@ -20,19 +20,21 @@ COLUMN_ALIASES = {
     "成交数量": ["成交数量", "trade_quantity", "quantity"],
 }
 
+st.set_page_config(page_title="指定标的持仓变动分析", layout="wide")
+st.title("指定标的持仓变动可视化")
+
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     column_map = {}
     for col in df.columns:
         name = str(col).strip()
+        normalized = None
         for canonical, aliases in COLUMN_ALIASES.items():
             if name == canonical or name in aliases:
-                column_map[col] = canonical
+                normalized = canonical
                 break
-        else:
-            column_map[col] = name
-    df = df.rename(columns=column_map)
-    return df
+        column_map[col] = normalized or name
+    return df.rename(columns=column_map)
 
 
 def read_uploaded_file(uploaded_file) -> pd.DataFrame:
@@ -51,7 +53,6 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
     if missing:
         raise ValueError(f"缺少必要字段：{', '.join(missing)}")
-
     return df
 
 
@@ -80,8 +81,6 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["账户名称", "证券公司名称", "证券简称", "买卖标志"]:
         if col in result.columns:
             result[col] = result[col].fillna("").astype(str).str.strip()
-
-    result["证券公司名称"] = result["证券公司名称"].fillna("").astype(str).str.strip()
 
     if result["账户名称"].str.strip().eq("").any():
         raise ValueError("账户名称中存在空值，请检查原始数据。")
@@ -150,35 +149,6 @@ def analyze_position(df: pd.DataFrame, account_name: str, company_name: str, tar
     return calculate_daily_position(filtered)
 
 
-def analyze_multiple_positions(df: pd.DataFrame, account_names, company_name: str, target_name: str):
-    if not account_names:
-        raise ValueError("请至少选择一个账户名称。")
-    if not target_name or not str(target_name).strip():
-        raise ValueError("指定标的不能为空。")
-
-    results = {}
-    missing_accounts = []
-
-    for account_name in account_names:
-        filtered = filter_transactions(df, account_name, company_name, target_name)
-        if filtered.empty:
-            missing_accounts.append(account_name)
-            continue
-        _, daily = calculate_daily_position(filtered)
-        results[account_name] = daily
-
-    if not results:
-        raise ValueError("未找到任何选中账户对应的交易记录，请检查账户名和查询条件。")
-
-    if missing_accounts:
-        st.warning(f"以下账户未找到对应记录，已跳过：{', '.join(missing_accounts)}")
-
-    return results
-
-
-st.set_page_config(page_title="指定标的持仓变动分析", layout="wide")
-st.title("指定标的持仓变动可视化")
-
 if "raw_df" not in st.session_state:
     st.session_state.raw_df = None
 
@@ -196,6 +166,7 @@ if uploaded_file is not None:
 
 if st.session_state.raw_df is not None:
     df = st.session_state.raw_df
+
     st.subheader("数据概览")
     col1, col2, col3 = st.columns(3)
     col1.metric("流水记录数", len(df))
@@ -203,132 +174,58 @@ if st.session_state.raw_df is not None:
     col3.metric("证券数量", int(df["证券简称"].nunique()))
 
     with st.form("analysis_form"):
-        mode = st.radio("分析模式", ["单账户", "多账户对比"], horizontal=True)
-
-        if mode == "单账户":
-            account_name = st.text_input("账户名称：")
-            company_name = st.text_input("证券公司名称（可为空）：")
-            target_options = sorted(df["证券简称"].dropna().unique().tolist())
-            target_name = st.selectbox("指定标的：", options=target_options, index=0 if target_options else None)
-        else:
-            account_options = sorted(df["账户名称"].dropna().unique().tolist())
-            selected_accounts = st.multiselect(
-                "账户名称（可多选）：",
-                options=account_options,
-                default=account_options[: min(3, len(account_options))] if account_options else [],
-            )
-            company_name = st.text_input("证券公司名称（可为空）：")
-            target_options = sorted(df["证券简称"].dropna().unique().tolist())
-            target_name = st.selectbox("指定标的：", options=target_options, index=0 if target_options else None)
-
+        account_name = st.text_input("账户名称：")
+        company_name = st.text_input("证券公司名称（可为空）：")
+        target_options = sorted(df["证券简称"].dropna().unique().tolist())
+        target_name = st.selectbox("指定标的：", options=target_options, index=0 if target_options else None)
         submitted = st.form_submit_button("开始分析")
 
     if submitted:
         try:
-            if mode == "单账户":
-                filtered, daily = analyze_position(df, account_name, company_name, target_name)
+            filtered, daily = analyze_position(df, account_name, company_name, target_name)
 
-                if (daily["当日持仓"] < 0).any():
-                    st.warning("计算结果出现负持仓，请检查原始流水或查询条件。")
+            if (daily["当日持仓"] < 0).any():
+                st.warning("计算结果出现负持仓，请检查原始流水或查询条件。")
 
-                st.subheader("分析结果")
-                summary_cols = st.columns(8)
-                summary_cols[0].metric("账户", account_name)
-                summary_cols[1].metric("证券公司", company_name if company_name else "全部")
-                summary_cols[2].metric("标的", target_name)
-                summary_cols[3].metric("交易笔数", int(len(filtered)))
-                summary_cols[4].metric("首次交易日期", filtered["交易日期"].min().strftime("%Y-%m-%d"))
-                summary_cols[5].metric("最后交易日期", filtered["交易日期"].max().strftime("%Y-%m-%d"))
-                summary_cols[6].metric("当前持仓", int(daily["当日持仓"].iloc[-1]))
-                summary_cols[7].metric("最高持仓", int(daily["当日持仓"].max()))
+            st.subheader("分析结果")
+            summary_cols = st.columns(8)
+            summary_cols[0].metric("账户", account_name)
+            summary_cols[1].metric("证券公司", company_name if company_name else "全部")
+            summary_cols[2].metric("标的", target_name)
+            summary_cols[3].metric("交易笔数", int(len(filtered)))
+            summary_cols[4].metric("首次交易日期", filtered["交易日期"].min().strftime("%Y-%m-%d"))
+            summary_cols[5].metric("最后交易日期", filtered["交易日期"].max().strftime("%Y-%m-%d"))
+            summary_cols[6].metric("当前持仓", int(daily["当日持仓"].iloc[-1]))
+            summary_cols[7].metric("最高持仓", int(daily["当日持仓"].max()))
 
-                fig = go.Figure()
-                fig.add_trace(
-                    go.Scatter(
-                        x=daily["交易日期"],
-                        y=daily["当日持仓"],
-                        mode="lines+markers",
-                        name=account_name,
-                        line={"width": 2},
-                        marker={"size": 7},
-                    )
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=daily["交易日期"],
+                    y=daily["当日持仓"],
+                    mode="lines+markers",
+                    name=account_name,
+                    line={"width": 2},
+                    marker={"size": 7},
                 )
-                fig.update_layout(
-                    title=f"{account_name} - {target_name} 持仓变化",
-                    xaxis_title="交易日期",
-                    yaxis_title="持仓数量",
-                    template="plotly_white",
-                    hovermode="x unified",
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            )
+            fig.update_layout(
+                title=f"{account_name} - {target_name} 持仓变化",
+                xaxis_title="交易日期",
+                yaxis_title="持仓数量",
+                template="plotly_white",
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-                result_table = daily[["交易日期", "当日买入", "当日卖出", "当日净变化", "当日持仓"]].copy()
-                result_table["交易日期"] = result_table["交易日期"].dt.strftime("%Y-%m-%d")
-                st.subheader("持仓明细表")
-                st.dataframe(result_table, use_container_width=True)
-
-            else:
-                if not selected_accounts:
-                    raise ValueError("请至少选择一个账户名称。")
-
-                results = analyze_multiple_positions(df, selected_accounts, company_name, target_name)
-                if any((daily["当日持仓"] < 0).any() for daily in results.values()):
-                    st.warning("计算结果出现负持仓，请检查原始流水或查询条件。")
-
-                st.subheader("多个账户持仓对比")
-                chart_dates = sorted(pd.concat([daily["交易日期"] for daily in results.values()]).unique())
-                chart_df = pd.DataFrame({"交易日期": chart_dates})
-                for account_name, daily in results.items():
-                    account_daily = daily[["交易日期", "当日持仓"]].rename(columns={"当日持仓": account_name})
-                    chart_df = chart_df.merge(account_daily, on="交易日期", how="left")
-
-                fig = go.Figure()
-                for account_name in selected_accounts:
-                    if account_name in results:
-                        y_vals = chart_df[account_name].tolist()
-                        fig.add_trace(
-                            go.Scatter(
-                                x=chart_df["交易日期"],
-                                y=y_vals,
-                                mode="lines+markers",
-                                name=account_name,
-                                line={"width": 2},
-                                marker={"size": 7},
-                            )
-                        )
-                fig.update_layout(
-                    title=f"{target_name} - 多账户持仓对比",
-                    xaxis_title="交易日期",
-                    yaxis_title="持仓数量",
-                    template="plotly_white",
-                    hovermode="x unified",
-                    legend_title="账户名称",
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                summary_rows = []
-                for account_name in selected_accounts:
-                    if account_name not in results:
-                        continue
-                    daily = results[account_name]
-                    summary_rows.append({
-                        "账户": account_name,
-                        "证券公司": company_name if company_name else "全部",
-                        "标的": target_name,
-                        "当前持仓": int(daily["当日持仓"].iloc[-1]),
-                        "最高持仓": int(daily["当日持仓"].max()),
-                        "首次交易日期": daily["交易日期"].min().strftime("%Y-%m-%d"),
-                        "最后交易日期": daily["交易日期"].max().strftime("%Y-%m-%d"),
-                    })
-
-                if summary_rows:
-                    summary_df = pd.DataFrame(summary_rows)
-                    st.subheader("对比汇总")
-                    st.dataframe(summary_df, use_container_width=True)
+            result_table = daily[["交易日期", "当日买入", "当日卖出", "当日净变化", "当日持仓"]].copy()
+            result_table["交易日期"] = result_table["交易日期"].dt.strftime("%Y-%m-%d")
+            st.subheader("持仓明细表")
+            st.dataframe(result_table, use_container_width=True)
 
         except ValueError as exc:
             st.error(str(exc))
 else:
     st.info("请先上传证券流水文件，然后输入账户信息和指定标的进行分析。")
 
-st.caption("说明：本工具支持单账户分析和多账户持仓对比，不包含收益率、成本价、盈亏等分析功能。")
+st.caption("说明：本工具支持指定账户 + 指定标的的每日持仓分析，暂不包含收益率、成本价、盈亏等其他分析功能。")
