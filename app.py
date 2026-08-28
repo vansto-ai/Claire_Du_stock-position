@@ -180,6 +180,15 @@ def analyze_multiple_positions(df: pd.DataFrame, account_names: list, company_na
     return results
 
 
+def fill_missing_dates(daily_df: pd.DataFrame, start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
+    """用前向填充的方式填补缺失的日期，使持仓线连续。"""
+    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+    filled_df = pd.DataFrame({"交易日期": date_range})
+    filled_df = filled_df.merge(daily_df, on="交易日期", how="left")
+    filled_df["当日持仓"] = filled_df["当日持仓"].fillna(method="ffill")
+    return filled_df
+
+
 if "raw_df" not in st.session_state:
     st.session_state.raw_df = None
 
@@ -282,14 +291,15 @@ if st.session_state.raw_df is not None:
 
                 st.subheader("多账户持仓对比")
                 
-                # 构建对比数据框
-                all_dates = sorted(pd.concat([daily["交易日期"] for daily in results.values()]).unique())
-                chart_df = pd.DataFrame({"交易日期": all_dates})
+                # 获取全局的最早和最晚交易日期
+                all_dates = pd.concat([daily["交易日期"] for daily in results.values()])
+                global_start_date = all_dates.min()
+                global_end_date = all_dates.max()
                 
+                # 为每个账户的数据填充缺失日期，使用前向填充
+                filled_results = {}
                 for account_name_temp, daily in results.items():
-                    account_daily = daily[["交易日期", "当日持仓"]].copy()
-                    account_daily = account_daily.rename(columns={"当日持仓": account_name_temp})
-                    chart_df = chart_df.merge(account_daily, on="交易日期", how="left")
+                    filled_results[account_name_temp] = fill_missing_dates(daily, global_start_date, global_end_date)
 
                 # 绘制多账户折线图
                 fig = go.Figure()
@@ -299,16 +309,18 @@ if st.session_state.raw_df is not None:
                 ]
                 
                 for idx, account_name_temp in enumerate(selected_accounts):
-                    if account_name_temp in results:
+                    if account_name_temp in filled_results:
                         color = colors[idx % len(colors)]
+                        filled_daily = filled_results[account_name_temp]
                         fig.add_trace(
                             go.Scatter(
-                                x=chart_df["交易日期"],
-                                y=chart_df[account_name_temp],
+                                x=filled_daily["交易日期"],
+                                y=filled_daily["当日持仓"],
                                 mode="lines+markers",
                                 name=account_name_temp,
                                 line={"width": 2, "color": color},
-                                marker={"size": 7},
+                                marker={"size": 5},
+                                connectgaps=True,
                             )
                         )
                 
