@@ -78,6 +78,9 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     result.columns = [str(c).strip() for c in result.columns]
 
+    # 删除整行为空的记录
+    result = result.dropna(how='all')
+
     for col in ["账户名称", "证券公司名称", "证券简称", "买卖标志"]:
         if col in result.columns:
             result[col] = result[col].fillna("").astype(str).str.strip()
@@ -93,9 +96,11 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if result["成交数量"].isna().any():
         raise ValueError("存在无法转换为数字的成交数量，请检查数据格式。")
 
+    # 先标准化买卖标志
     result["买卖标志"] = result["买卖标志"].map(normalize_flag)
-    if result["买卖标志"].isna().any():
-        raise ValueError("存在无法识别的买卖标志，允许的值包括：B / S / 买 / 卖。")
+    
+    # 删除买卖标志为空的行（包括原始数据中的空白行）
+    result = result.dropna(subset=["买卖标志"])
 
     result = result.sort_values("交易日期").reset_index(drop=True)
     return result
@@ -159,7 +164,7 @@ if uploaded_file is not None:
         raw_df = read_uploaded_file(uploaded_file)
         prepared_df = prepare_dataframe(raw_df)
         st.session_state.raw_df = prepared_df
-        st.success("文件已成功导入。")
+        st.success(f"文件已成功导入。有效记录数：{len(prepared_df)}")
     except ValueError as exc:
         st.error(str(exc))
         st.session_state.raw_df = None
