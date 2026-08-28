@@ -154,6 +154,32 @@ def analyze_position(df: pd.DataFrame, account_name: str, company_name: str, tar
     return calculate_daily_position(filtered)
 
 
+def analyze_multiple_positions(df: pd.DataFrame, account_names: list, company_name: str, target_name: str):
+    if not account_names:
+        raise ValueError("请至少选择一个账户名称。")
+    if not target_name or not str(target_name).strip():
+        raise ValueError("指定标的不能为空。")
+
+    results = {}
+    missing_accounts = []
+
+    for account_name in account_names:
+        filtered = filter_transactions(df, account_name, company_name, target_name)
+        if filtered.empty:
+            missing_accounts.append(account_name)
+            continue
+        _, daily = calculate_daily_position(filtered)
+        results[account_name] = daily
+
+    if not results:
+        raise ValueError("未找到任何选中账户对应的交易记录，请检查账户名和查询条件。")
+
+    if missing_accounts:
+        st.warning(f"以下账户未找到对应记录，已跳过：{', '.join(missing_accounts)}")
+
+    return results
+
+
 if "raw_df" not in st.session_state:
     st.session_state.raw_df = None
 
@@ -178,59 +204,150 @@ if st.session_state.raw_df is not None:
     col2.metric("账户数量", int(df["账户名称"].nunique()))
     col3.metric("证券数量", int(df["证券简称"].nunique()))
 
+    # 分析模式选择
+    st.subheader("分析模式")
+    mode = st.radio("选择分析模式：", ["单账户分析", "多账户对比"], horizontal=True)
+
     with st.form("analysis_form"):
-        account_name = st.text_input("账户名称：")
-        company_name = st.text_input("证券公司名称（可为空）：")
-        target_options = sorted(df["证券简称"].dropna().unique().tolist())
-        target_name = st.selectbox("指定标的：", options=target_options, index=0 if target_options else None)
-        submitted = st.form_submit_button("开始分析")
+        if mode == "单账户分析":
+            account_name = st.text_input("账户名称：")
+            company_name = st.text_input("证券公司名称（可为空）：")
+            target_options = sorted(df["证券简称"].dropna().unique().tolist())
+            target_name = st.selectbox("指定标的：", options=target_options, index=0 if target_options else None)
+            submitted = st.form_submit_button("开始分析")
+        else:  # 多账户对比
+            account_options = sorted(df["账户名称"].dropna().unique().tolist())
+            selected_accounts = st.multiselect(
+                "账户名称（可多选）：",
+                options=account_options,
+                default=account_options[:min(3, len(account_options))] if account_options else [],
+            )
+            company_name = st.text_input("证券公司名称（可为空）：")
+            target_options = sorted(df["证券简称"].dropna().unique().tolist())
+            target_name = st.selectbox("指定标的：", options=target_options, index=0 if target_options else None)
+            submitted = st.form_submit_button("开始分析")
 
     if submitted:
         try:
-            filtered, daily = analyze_position(df, account_name, company_name, target_name)
+            if mode == "单账户分析":
+                filtered, daily = analyze_position(df, account_name, company_name, target_name)
 
-            if (daily["当日持仓"] < 0).any():
-                st.warning("计算结果出现负持仓，请检查原始流水或查询条件。")
+                if (daily["当日持仓"] < 0).any():
+                    st.warning("计算结果出现负持仓，请检查原始流水或查询条件。")
 
-            st.subheader("分析结果")
-            summary_cols = st.columns(8)
-            summary_cols[0].metric("账户", account_name)
-            summary_cols[1].metric("证券公司", company_name if company_name else "全部")
-            summary_cols[2].metric("标的", target_name)
-            summary_cols[3].metric("交易笔数", int(len(filtered)))
-            summary_cols[4].metric("首次交易日期", filtered["交易日期"].min().strftime("%Y-%m-%d"))
-            summary_cols[5].metric("最后交易日期", filtered["交易日期"].max().strftime("%Y-%m-%d"))
-            summary_cols[6].metric("当前持仓", int(daily["当日持仓"].iloc[-1]))
-            summary_cols[7].metric("最高持仓", int(daily["当日持仓"].max()))
+                st.subheader("分析结果")
+                summary_cols = st.columns(8)
+                summary_cols[0].metric("账户", account_name)
+                summary_cols[1].metric("证券公司", company_name if company_name else "全部")
+                summary_cols[2].metric("标的", target_name)
+                summary_cols[3].metric("交易笔数", int(len(filtered)))
+                summary_cols[4].metric("首次交易日期", filtered["交易日期"].min().strftime("%Y-%m-%d"))
+                summary_cols[5].metric("最后交易日期", filtered["交易日期"].max().strftime("%Y-%m-%d"))
+                summary_cols[6].metric("当前持仓", int(daily["当日持仓"].iloc[-1]))
+                summary_cols[7].metric("最高持仓", int(daily["当日持仓"].max()))
 
-            fig = go.Figure()
-            fig.add_trace(
-                go.Scatter(
-                    x=daily["交易日期"],
-                    y=daily["当日持仓"],
-                    mode="lines+markers",
-                    name=account_name,
-                    line={"width": 2},
-                    marker={"size": 7},
+                fig = go.Figure()
+                fig.add_trace(
+                    go.Scatter(
+                        x=daily["交易日期"],
+                        y=daily["当日持仓"],
+                        mode="lines+markers",
+                        name=account_name,
+                        line={"width": 2},
+                        marker={"size": 7},
+                    )
                 )
-            )
-            fig.update_layout(
-                title=f"{account_name} - {target_name} 持仓变化",
-                xaxis_title="交易日期",
-                yaxis_title="持仓数量",
-                template="plotly_white",
-                hovermode="x unified",
-            )
-            st.plotly_chart(fig, use_container_width=True)
+                fig.update_layout(
+                    title=f"{account_name} - {target_name} 持仓变化",
+                    xaxis_title="交易日期",
+                    yaxis_title="持仓数量",
+                    template="plotly_white",
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-            result_table = daily[["交易日期", "当日买入", "当日卖出", "当日净变化", "当日持仓"]].copy()
-            result_table["交易日期"] = result_table["交易日期"].dt.strftime("%Y-%m-%d")
-            st.subheader("持仓明细表")
-            st.dataframe(result_table, use_container_width=True)
+                result_table = daily[["交易日期", "当日买入", "当日卖出", "当日净变化", "当日持仓"]].copy()
+                result_table["交易日期"] = result_table["交易日期"].dt.strftime("%Y-%m-%d")
+                st.subheader("持仓明细表")
+                st.dataframe(result_table, use_container_width=True)
+
+            else:  # 多账户对比
+                if not selected_accounts:
+                    raise ValueError("请至少选择一个账户名称。")
+
+                results = analyze_multiple_positions(df, selected_accounts, company_name, target_name)
+
+                if any((daily["当日持仓"] < 0).any() for daily in results.values()):
+                    st.warning("计算结果出现负持仓，请检查原始流水或查询条件。")
+
+                st.subheader("多账户持仓对比")
+                
+                # 构建对比数据框
+                all_dates = sorted(pd.concat([daily["交易日期"] for daily in results.values()]).unique())
+                chart_df = pd.DataFrame({"交易日期": all_dates})
+                
+                for account_name_temp, daily in results.items():
+                    account_daily = daily[["交易日期", "当日持仓"]].copy()
+                    account_daily = account_daily.rename(columns={"当日持仓": account_name_temp})
+                    chart_df = chart_df.merge(account_daily, on="交易日期", how="left")
+
+                # 绘制多账户折线图
+                fig = go.Figure()
+                colors = [
+                    "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+                    "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+                ]
+                
+                for idx, account_name_temp in enumerate(selected_accounts):
+                    if account_name_temp in results:
+                        color = colors[idx % len(colors)]
+                        fig.add_trace(
+                            go.Scatter(
+                                x=chart_df["交易日期"],
+                                y=chart_df[account_name_temp],
+                                mode="lines+markers",
+                                name=account_name_temp,
+                                line={"width": 2, "color": color},
+                                marker={"size": 7},
+                            )
+                        )
+                
+                fig.update_layout(
+                    title=f"{target_name} - 多账户持仓对比",
+                    xaxis_title="交易日期",
+                    yaxis_title="持仓数量",
+                    template="plotly_white",
+                    hovermode="x unified",
+                    legend_title="账户名称",
+                    height=500,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # 对比汇总表
+                st.subheader("对比汇总")
+                summary_rows = []
+                for account_name_temp in selected_accounts:
+                    if account_name_temp not in results:
+                        continue
+                    daily = results[account_name_temp]
+                    summary_rows.append({
+                        "账户": account_name_temp,
+                        "证券公司": company_name if company_name else "全部",
+                        "标的": target_name,
+                        "交易笔数": len(filter_transactions(df, account_name_temp, company_name, target_name)),
+                        "首次交易日期": daily["交易日期"].min().strftime("%Y-%m-%d"),
+                        "最后交易日期": daily["交易日期"].max().strftime("%Y-%m-%d"),
+                        "当前持仓": int(daily["当日持仓"].iloc[-1]),
+                        "最高持仓": int(daily["当日持仓"].max()),
+                    })
+
+                if summary_rows:
+                    summary_df = pd.DataFrame(summary_rows)
+                    st.dataframe(summary_df, use_container_width=True)
 
         except ValueError as exc:
             st.error(str(exc))
 else:
-    st.info("请先上传证券流水文件，然后输入账户信息和指定标的进行分析。")
+    st.info("请先上传证券流水文件，然后选择分析模式进行分析。")
 
-st.caption("说明：本工具支持指定账户 + 指定标的的每日持仓分析，暂不包含收益率、成本价、盈亏等其他分析功能。")
+st.caption("说明：本工具支持单账户分析和多账户持仓对比，暂不包含收益率、成本价、盈亏等其他分析功能。")
